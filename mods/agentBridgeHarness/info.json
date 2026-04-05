@@ -1,0 +1,11 @@
+{
+  "name": "agent-bridge-harness",
+  "version": "0.1.0",
+  "title": "Agent Bridge Harness",
+  "author": "OpenAI Codex",
+  "description": "Thin local harness for semantics-first Factorio validation runs.",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0.0"
+  ]
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "actual": true,
+    "evidence": {},
+    "expected": true,
+    "name": "arena-created",
+    "passed": true,
+    "type": "invariant"
+  },
+  {
+    "actual": ["group_registered", "flank_waypoint_set", "attack_selected"],
+    "evidence": {
+      "matched": ["group_registered", "flank_waypoint_set", "attack_selected"],
+      "missing": []
+    },
+    "expected": ["group_registered", "flank_waypoint_set", "attack_selected"],
+    "name": "expected-event-sequence",
+    "passed": true,
+    "type": "sequence"
+  }
+]

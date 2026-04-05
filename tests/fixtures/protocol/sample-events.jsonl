@@ -1,0 +1,3 @@
+{"category": "scenario_started", "event": "scenario_started", "mod_name": "advanced-biter-tactics", "scenario_name": "wall-covered-flank", "tick": 0}
+{"category": "decision_made", "event": "flank_waypoint_set", "mod_name": "advanced-biter-tactics", "scenario_name": "wall-covered-flank", "tick": 90}
+{"category": "target_selected", "event": "attack_selected", "mod_name": "advanced-biter-tactics", "scenario_name": "wall-covered-flank", "tick": 120}
