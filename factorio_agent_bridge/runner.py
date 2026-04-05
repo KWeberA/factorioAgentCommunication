@@ -8,13 +8,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from factorio_agent_bridge.adapters.advanced_biter_tactics import diff_runs, normalize_run
+from factorio_agent_bridge.adapters import advanced_biter_tactics, biter_aware_bot_pathing, biter_turret_defense, smart_combat_alarms
+from factorio_agent_bridge.adapters.common import standard_diff_runs
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HARNESS_SOURCE = REPO_ROOT / "mods" / "agentBridgeHarness"
 WORKSPACE_ROOT = REPO_ROOT / ".agent-bridge"
 RUNS_ROOT = REPO_ROOT / "runs"
+
+MOD_REGISTRY = {
+    "abt": {
+        "adapter": advanced_biter_tactics,
+        "enabled_builtin_mods": ["base"],
+    },
+    "babp": {
+        "adapter": biter_aware_bot_pathing,
+        "enabled_builtin_mods": ["base"],
+    },
+    "sca": {
+        "adapter": smart_combat_alarms,
+        "enabled_builtin_mods": ["base"],
+    },
+    "btd": {
+        "adapter": biter_turret_defense,
+        "enabled_builtin_mods": ["base"],
+    },
+}
 
 
 def _read_info_json(mod_root: Path) -> dict[str, Any]:
@@ -54,13 +74,10 @@ def _copy_tree(source: Path, target: Path, *, excluded_names: set[str] | None = 
             shutil.copy2(child, destination)
 
 
-def _write_mod_list(path: Path, target_mod_name: str, harness_mod_name: str) -> None:
+def _write_mod_list(path: Path, target_mod_name: str, harness_mod_name: str, enabled_builtin_mods: list[str]) -> None:
     write_payload = {
         "mods": [
-            {"name": "base", "enabled": True},
-            {"name": "elevated-rails", "enabled": True},
-            {"name": "quality", "enabled": True},
-            {"name": "space-age", "enabled": True},
+            *({"name": mod_name, "enabled": True} for mod_name in enabled_builtin_mods),
             {"name": harness_mod_name, "enabled": True},
             {"name": target_mod_name, "enabled": True},
         ]
@@ -95,6 +112,8 @@ def _write_harness_config(
     max_ticks: int,
     sample_interval: int,
     capture_radius: int,
+    setup_options: dict[str, Any],
+    assertion_options: dict[str, Any],
 ) -> None:
     payload = {
         "mod_name": mod_name,
@@ -104,8 +123,8 @@ def _write_harness_config(
         "capture_options": {
             "radius": capture_radius,
         },
-        "setup_options": {},
-        "assertion_options": {},
+        "setup_options": setup_options,
+        "assertion_options": assertion_options,
     }
     lines = [
         "return {",
@@ -121,21 +140,60 @@ def _write_harness_config(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _run_factorio(factorio_exe: Path, args: list[str]) -> None:
-    completed = subprocess.run([str(factorio_exe), *args], check=False)
+def _build_create_args(config_path: Path, mods_root: Path, save_path: Path) -> list[str]:
+    return [
+        "--config",
+        str(config_path),
+        "--mod-directory",
+        str(mods_root),
+        "--disable-audio",
+        "--map-gen-seed",
+        "424242",
+        "--create",
+        str(save_path),
+    ]
+
+
+def _build_benchmark_args(config_path: Path, mods_root: Path, save_path: Path, max_ticks: int) -> list[str]:
+    return [
+        "--config",
+        str(config_path),
+        "--mod-directory",
+        str(mods_root),
+        "--disable-audio",
+        "--benchmark",
+        str(save_path),
+        "--benchmark-ticks",
+        str(max_ticks + 1),
+        "--benchmark-runs",
+        "1",
+        "--benchmark-ignore-paused",
+    ]
+
+
+def _run_factorio(factorio_exe: Path, args: list[str], *, cwd: Path | None = None) -> None:
+    completed = subprocess.run([str(factorio_exe), *args], check=False, cwd=cwd)
     if completed.returncode != 0:
         raise RuntimeError(f"Factorio failed with exit code {completed.returncode}: {' '.join(args)}")
 
 
-def run_advanced_biter_tactics(
+def run_mod_scenario(
     *,
+    mod_key: str,
     factorio_exe: Path,
     target_mod_root: Path,
     scenario_name: str,
     max_ticks: int,
     sample_interval: int,
     capture_radius: int,
+    setup_options: dict[str, Any],
+    assertion_options: dict[str, Any],
 ) -> Path:
+    if mod_key not in MOD_REGISTRY:
+        raise KeyError(f"Unknown mod key: {mod_key}")
+
+    mod_entry = MOD_REGISTRY[mod_key]
+    adapter = mod_entry["adapter"]
     info = _read_info_json(target_mod_root)
     target_mod_name = info["name"]
     target_mod_version = info["version"]
@@ -143,7 +201,7 @@ def run_advanced_biter_tactics(
     harness_mod_name = harness_info["name"]
     harness_mod_version = harness_info["version"]
 
-    runtime_root = WORKSPACE_ROOT / "workspaces" / "advanced-biter-tactics"
+    runtime_root = WORKSPACE_ROOT / "workspaces" / mod_key
     mods_root = runtime_root / "mods"
     config_root = runtime_root / "config"
     saves_root = runtime_root / "saves"
@@ -172,8 +230,15 @@ def run_advanced_biter_tactics(
         max_ticks=max_ticks,
         sample_interval=sample_interval,
         capture_radius=capture_radius,
+        setup_options=setup_options,
+        assertion_options=assertion_options,
     )
-    _write_mod_list(mods_root / "mod-list.json", target_mod_name, harness_mod_name)
+    _write_mod_list(
+        mods_root / "mod-list.json",
+        target_mod_name,
+        harness_mod_name,
+        enabled_builtin_mods=mod_entry["enabled_builtin_mods"],
+    )
 
     if save_path.exists():
         save_path.unlink()
@@ -183,32 +248,13 @@ def run_advanced_biter_tactics(
 
     _run_factorio(
         factorio_exe,
-        [
-            "--config",
-            str(config_path),
-            "--mod-directory",
-            str(mods_root),
-            "--disable-audio",
-            "--create",
-            str(save_path),
-        ],
+        _build_create_args(config_path, mods_root, save_path),
+        cwd=REPO_ROOT,
     )
     _run_factorio(
         factorio_exe,
-        [
-            "--config",
-            str(config_path),
-            "--mod-directory",
-            str(mods_root),
-            "--disable-audio",
-            "--benchmark",
-            str(save_path),
-            "--benchmark-ticks",
-            str(max_ticks),
-            "--benchmark-runs",
-            "1",
-            "--benchmark-sanitize",
-        ],
+        _build_benchmark_args(config_path, mods_root, save_path, max_ticks),
+        cwd=REPO_ROOT,
     )
 
     raw_manifest = raw_script_output_root / "agent-bridge" / "run-manifest.json"
@@ -217,21 +263,39 @@ def run_advanced_biter_tactics(
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_root = RUNS_ROOT / f"{run_id}-{scenario_name}"
-    normalize_run(raw_script_output_root, output_root)
+    adapter.normalize_run(raw_script_output_root, output_root)
     return output_root
+
+
+def _parse_json_option(raw_value: str) -> dict[str, Any]:
+    payload = json.loads(raw_value)
+    if not isinstance(payload, dict):
+        raise ValueError("JSON option payloads must decode to objects")
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="factorio-agent-bridge")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run-abt", help="Run advanced-biter-tactics through the bridge")
+    run_parser = subparsers.add_parser("run", help="Run a bridge-integrated mod scenario")
+    run_parser.add_argument("--mod", required=True, choices=sorted(MOD_REGISTRY.keys()))
     run_parser.add_argument("--factorio-exe", required=True, type=Path)
     run_parser.add_argument("--target-mod-root", required=True, type=Path)
     run_parser.add_argument("--scenario", required=True)
     run_parser.add_argument("--max-ticks", type=int, default=720)
     run_parser.add_argument("--sample-interval", type=int, default=30)
     run_parser.add_argument("--capture-radius", type=int, default=48)
+    run_parser.add_argument("--setup-options-json", default="{}")
+    run_parser.add_argument("--assertion-options-json", default="{}")
+
+    legacy_run_parser = subparsers.add_parser("run-abt", help="Backward compatible ABT bridge command")
+    legacy_run_parser.add_argument("--factorio-exe", required=True, type=Path)
+    legacy_run_parser.add_argument("--target-mod-root", required=True, type=Path)
+    legacy_run_parser.add_argument("--scenario", required=True)
+    legacy_run_parser.add_argument("--max-ticks", type=int, default=720)
+    legacy_run_parser.add_argument("--sample-interval", type=int, default=30)
+    legacy_run_parser.add_argument("--capture-radius", type=int, default=48)
 
     diff_parser = subparsers.add_parser("diff", help="Diff two normalized runs")
     diff_parser.add_argument("--left", required=True, type=Path)
@@ -239,20 +303,38 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.command == "run-abt":
-        output_root = run_advanced_biter_tactics(
+    if args.command == "run":
+        output_root = run_mod_scenario(
+            mod_key=args.mod,
             factorio_exe=args.factorio_exe,
             target_mod_root=args.target_mod_root,
             scenario_name=args.scenario,
             max_ticks=args.max_ticks,
             sample_interval=args.sample_interval,
             capture_radius=args.capture_radius,
+            setup_options=_parse_json_option(args.setup_options_json),
+            assertion_options=_parse_json_option(args.assertion_options_json),
+        )
+        print(output_root)
+        return 0
+
+    if args.command == "run-abt":
+        output_root = run_mod_scenario(
+            mod_key="abt",
+            factorio_exe=args.factorio_exe,
+            target_mod_root=args.target_mod_root,
+            scenario_name=args.scenario,
+            max_ticks=args.max_ticks,
+            sample_interval=args.sample_interval,
+            capture_radius=args.capture_radius,
+            setup_options={},
+            assertion_options={},
         )
         print(output_root)
         return 0
 
     if args.command == "diff":
-        print(json.dumps(diff_runs(args.left, args.right), indent=2))
+        print(json.dumps(standard_diff_runs(args.left, args.right), indent=2))
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")

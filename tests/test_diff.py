@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from factorio_agent_bridge.adapters.advanced_biter_tactics import diff_runs
+from factorio_agent_bridge.adapters.common import standard_diff_runs
 
 
 def test_diff_runs_reports_improvements_and_regressions(tmp_path: Path) -> None:
@@ -21,6 +21,6 @@ def test_diff_runs_reports_improvements_and_regressions(tmp_path: Path) -> None:
         {"name": "support-mode", "passed": False},
     ]), encoding="utf-8")
 
-    diff = diff_runs(left, right)
+    diff = standard_diff_runs(left, right)
     assert diff["improved"] == ["expected-event-sequence"]
     assert diff["unchanged_failures"] == ["support-mode"]

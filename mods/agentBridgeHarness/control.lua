@@ -37,62 +37,87 @@ local function write_run_manifest(status, setup_result)
   return payload
 end
 
-script.on_init(function()
-  storage.bridge = {
-    stage = "setup",
-    start_tick = nil,
-    setup_result = nil,
-    next_sample_tick = nil
+local function ensure_state()
+  storage.bridge = storage.bridge or {}
+  storage.bridge.bootstrap_complete = storage.bridge.bootstrap_complete or false
+  storage.bridge.completed = storage.bridge.completed or false
+  storage.bridge.start_tick = storage.bridge.start_tick or nil
+  storage.bridge.setup_result = storage.bridge.setup_result or nil
+  storage.bridge.next_sample_tick = storage.bridge.next_sample_tick or nil
+end
+
+local function bootstrap_run(reason)
+  ensure_state()
+
+  if storage.bridge.bootstrap_complete then
+    return
+  end
+
+  remote.call("agent_bridge", "reset_scenario")
+  storage.bridge.setup_result = remote.call("agent_bridge", "setup_scenario", CONFIG.scenario_name, CONFIG.setup_options)
+  storage.bridge.start_tick = game.tick
+  storage.bridge.next_sample_tick = game.tick + CONFIG.sample_interval
+  storage.bridge.bootstrap_complete = true
+  capture_frame(reason or "start")
+end
+
+local function finalize_run(reason)
+  if storage.bridge.completed then
+    return
+  end
+
+  capture_frame(reason or "final")
+  local assertions = remote.call("agent_bridge", "evaluate_assertions", CONFIG.scenario_name, CONFIG.assertion_options)
+  local failed = 0
+  for index = 1, #assertions do
+    if not assertions[index].passed then
+      failed = failed + 1
+    end
+  end
+
+  json_write(OUTPUT_ROOT .. "/assertions.json", assertions)
+  local summary = {
+    status = failed == 0 and "passed" or "failed",
+    assertion_counts = {
+      passed = #assertions - failed,
+      failed = failed,
+      total = #assertions
+    }
   }
+  json_write(OUTPUT_ROOT .. "/summary.json", summary)
+  write_run_manifest(summary.status, storage.bridge.setup_result)
+  remote.call("agent_bridge", "reset_scenario")
+  storage.bridge.completed = true
+end
+
+script.on_init(function()
+  ensure_state()
+  bootstrap_run("runner-init")
 end)
 
-script.on_nth_tick(1, function()
-  if storage.bridge.stage == "completed" then
-    script.on_nth_tick(1, nil)
+script.on_configuration_changed(function()
+  ensure_state()
+  bootstrap_run("runner-config-changed")
+end)
+
+script.on_event(defines.events.on_tick, function(event)
+  ensure_state()
+
+  if storage.bridge.completed then
     return
   end
 
-  if storage.bridge.stage == "setup" then
-    remote.call("agent_bridge", "reset_scenario")
-    storage.bridge.setup_result = remote.call("agent_bridge", "setup_scenario", CONFIG.scenario_name, CONFIG.setup_options)
-    storage.bridge.start_tick = game.tick
-    storage.bridge.next_sample_tick = game.tick + CONFIG.sample_interval
-    storage.bridge.stage = "running"
-    capture_frame("start")
+  if not storage.bridge.bootstrap_complete then
+    bootstrap_run("runner-tick-bootstrap")
     return
   end
 
-  if storage.bridge.stage ~= "running" then
-    return
-  end
-
-  if game.tick >= storage.bridge.next_sample_tick then
+  if event.tick >= storage.bridge.next_sample_tick then
     capture_frame("interval")
-    storage.bridge.next_sample_tick = game.tick + CONFIG.sample_interval
+    storage.bridge.next_sample_tick = event.tick + CONFIG.sample_interval
   end
 
-  if game.tick - storage.bridge.start_tick + 1 >= CONFIG.max_ticks then
-    capture_frame("final")
-    local assertions = remote.call("agent_bridge", "evaluate_assertions", CONFIG.scenario_name, CONFIG.assertion_options)
-    local failed = 0
-    for index = 1, #assertions do
-      if not assertions[index].passed then
-        failed = failed + 1
-      end
-    end
-
-    json_write(OUTPUT_ROOT .. "/assertions.json", assertions)
-    local summary = {
-      status = failed == 0 and "passed" or "failed",
-      assertion_counts = {
-        passed = #assertions - failed,
-        failed = failed,
-        total = #assertions
-      }
-    }
-    json_write(OUTPUT_ROOT .. "/summary.json", summary)
-    write_run_manifest(summary.status, storage.bridge.setup_result)
-    storage.bridge.stage = "completed"
-    script.on_nth_tick(1, nil)
+  if event.tick - storage.bridge.start_tick >= CONFIG.max_ticks then
+    finalize_run("benchmark-complete")
   end
 end)
