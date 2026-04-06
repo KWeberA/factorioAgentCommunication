@@ -8,6 +8,7 @@ from factorio_agent_bridge.adapters.common import (
     finalize_normalized_run,
     load_optional_json,
     load_optional_jsonl,
+    merge_events,
     standard_diff_runs,
     synthetic_boundary_events,
 )
@@ -16,7 +17,7 @@ from factorio_agent_bridge.adapters.common import (
 NATIVE_DIR = "biter-aware-bot-pathing"
 
 
-def _normalize_native_event(event: dict[str, Any], scenario_name: str, mod_name: str) -> dict[str, Any]:
+def _normalize_native_event(event: dict[str, Any], scenario_name: str, mod_name: str, source_event_index: int) -> dict[str, Any]:
     return {
         "tick": event.get("tick"),
         "category": event.get("category", "decision_made"),
@@ -27,13 +28,15 @@ def _normalize_native_event(event: dict[str, Any], scenario_name: str, mod_name:
         "position": event.get("position"),
         "reason": event.get("reason"),
         "details": event.get("details", {}),
+        "source": "mod-semantic",
+        "source_event_index": source_event_index,
     }
 
 
 def normalize_run(raw_script_output_root: Path, output_root: Path) -> dict[str, Any]:
     native_root = raw_script_output_root / NATIVE_DIR
-    run_manifest, assertions, _ = copy_harness_outputs(raw_script_output_root, output_root)
-    boundary_events = synthetic_boundary_events(run_manifest)
+    run_manifest, assertions, _, harness_events = copy_harness_outputs(raw_script_output_root, output_root)
+    boundary_events = harness_events or synthetic_boundary_events(run_manifest)
 
     native_events = load_optional_jsonl(native_root / "bridge-events.jsonl")
     validation_summary = load_optional_json(native_root / "validation-test-map.json")
@@ -52,12 +55,11 @@ def normalize_run(raw_script_output_root: Path, output_root: Path) -> dict[str, 
             }
         )
 
-    normalized_events = [boundary_events[0]]
-    normalized_events.extend(
-        _normalize_native_event(event, run_manifest["scenario_name"], run_manifest["mod_name"])
-        for event in native_events
-    )
-    normalized_events.append(boundary_events[1])
+    normalized_native_events = [
+        _normalize_native_event(event, run_manifest["scenario_name"], run_manifest["mod_name"], source_event_index=index)
+        for index, event in enumerate(native_events)
+    ]
+    normalized_events = merge_events(boundary_events, normalized_native_events)
     return finalize_normalized_run(
         output_root,
         run_manifest=run_manifest,
